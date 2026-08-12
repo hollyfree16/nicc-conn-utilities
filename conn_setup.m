@@ -62,6 +62,13 @@ USE_MANUAL_TR = false;
 % ---- Wildcard used to enumerate subject folders directly under BIDS_ROOT ----
 SUBJECT_GLOB = 'sub-MGHL2*';
 
+% Real subject IDs (as printed in the manifest/subject-ID map, e.g.
+% 'MGHL2p013') to exclude by hand — e.g. known-bad data, failed the
+% GZIP integrity check, or implausible scan content (wrong frame count,
+% etc.) that isn't a matter of tightening the patterns above. Excluded
+% here, before any file searching happens for them.
+EXCLUDE_SUBJECTS = {};   % example: {'MGHL2p013', 'MGHL2p031'}
+
 % ---- Define one glob pattern PER SCAN TYPE, RELATIVE TO EACH SUBJECT'S FOLDER ----
 % Adjust these to your actual BIDS naming. Check one real filename
 % first, e.g. sub-MGHL2p001_ses-001_task-emotion_run-01_bold.nii.gz
@@ -98,6 +105,22 @@ subj_folder_names = subj_folder_names(sort_idx);
 nsubjects = numel(all_subjects);
 
 fprintf('Found %d subject folder(s) matching "%s".\n', nsubjects, SUBJECT_GLOB);
+
+%% ------------------- APPLY MANUAL SUBJECT EXCLUSIONS -------------------
+
+if ~isempty(EXCLUDE_SUBJECTS)
+    is_excluded = ismember(all_subjects, EXCLUDE_SUBJECTS);
+    if any(is_excluded)
+        fprintf('Manually excluding %d subject(s) via EXCLUDE_SUBJECTS: %s\n', sum(is_excluded), strjoin(all_subjects(is_excluded), ', '));
+    end
+    unmatched = setdiff(EXCLUDE_SUBJECTS, all_subjects);
+    if ~isempty(unmatched)
+        warning('EXCLUDE_SUBJECTS contains ID(s) not found among matched subject folders: %s', strjoin(unmatched, ', '));
+    end
+    all_subjects       = all_subjects(~is_excluded);
+    subj_folder_names  = subj_folder_names(~is_excluded);
+    nsubjects          = numel(all_subjects);
+end
 
 %% ------------------- FIND FILES FOR EACH SCAN TYPE, PER SUBJECT -------------------
 % conn_dir is now called once per subject per scan type, scoped to that
