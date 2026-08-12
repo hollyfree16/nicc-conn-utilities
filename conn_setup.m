@@ -23,39 +23,40 @@
 % file has a matching .json sidecar in the same folder (standard BIDS).
 % If any are missing, set MANUAL_TR below to fall back on fixed values.
 % -------------------------------------------------------------------
+addpath('/autofs/space/nicc_003/users/holly/repo/spm12')
+addpath('/autofs/space/nicc_003/users/holly/repo/conn_25b')
 
 clear batch;
 
 %% ------------------- USER SETTINGS (edit these) -------------------
 
-BIDS_ROOT    = '/your/bids/root';                   % <-- root of your BIDS dataset (contains sub-* folders)
-PROJECT_DIR  = '/your/output/conn_project';          % <-- folder where the NEW conn project will be created
-PROJECT_NAME = 'MyProject';                           % <-- project name, no spaces (creates PROJECT_NAME.mat)
+BIDS_ROOT    = '/autofs/space/nicc_006/data/LETBI/BIDS';                   % <-- root of your BIDS dataset (contains sub-* folders)
+PROJECT_DIR  = '/autofs/space/nicc_006/data/LETBI/BIDS/derivatives/conn_v25b';          % <-- folder where the NEW conn project will be created
+PROJECT_NAME = 'MGHL2_emotion_rest';                           % <-- project name, no spaces (creates PROJECT_NAME.mat)
 
 % Set to true only if some/all of your sidecar .json files are missing
 % and CONN can't auto-read RepetitionTime. If true, define MANUAL_TR
 % values per scan type below and the script will use those instead.
 USE_MANUAL_TR = false;
-MANUAL_TR.task = 1.5;   % example only — used only if USE_MANUAL_TR = true
-MANUAL_TR.rest = 2.0;   % example only — used only if USE_MANUAL_TR = true
+%MANUAL_TR.task = 1.5;   % example only — used only if USE_MANUAL_TR = true
+%MANUAL_TR.rest = 2.0;   % example only — used only if USE_MANUAL_TR = true
 
 % ---- Define one glob pattern PER SCAN TYPE ----
 % Adjust these to your actual BIDS naming. Check one real filename
 % first, e.g. sub-MGHL201_ses-001_task-emotion_run-1_bold.nii.gz
 % Order in this list = session order CONN will assign (see below).
 scan_defs = struct( ...
-    'label',   {'task_emotion_run1', 'task_emotion_run2', 'rest_run1', 'rest_run2'}, ...
+    'label',   {'task_emotion_run1', 'task_emotion_run2', 'rest_run1'}, ...
     'pattern', { ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-emotion*run-1*.nii.gz'), ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-emotion*run-2*.nii.gz'), ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-rest*run-1*.nii.gz'), ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-rest*run-2*.nii.gz') ...
+        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-emotion_run-01_bold.nii.gz'), ...
+        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-emotion_run-02_bold.nii.gz'), ...
+        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-rest_bold.nii.gz') ...
     }, ...
-    'type',    {'task','task','rest','rest'} ...   % used only if USE_MANUAL_TR = true
+    'type',    {'task','task','rest'} ...   % used only if USE_MANUAL_TR = true
     );
 
 % Structural file pattern — set to '' to skip structural import
-STRUCT_PATTERN = fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'anat', '*T1w.nii.gz');
+STRUCT_PATTERN = fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'anat', '*ses-001_T1w.nii.gz');
 
 %% ------------------- FIND FILES FOR EACH SCAN TYPE -------------------
 
@@ -75,7 +76,15 @@ for k = 1:nscantypes
     counts = accumarray(ic, 1);
     if any(counts > 1)
         bad = u(counts > 1);
-        error('Scan type "%s" matched more than one file for subject(s): %s. Tighten the pattern.', scan_defs(k).label, strjoin(bad, ', '));
+        fprintf('\nScan type "%s" matched more than one file for the following subject(s):\n', scan_defs(k).label);
+        for bi = 1:numel(bad)
+            fprintf('  %s:\n', bad{bi});
+            dupfiles = files(strcmp(subj_ids, bad{bi}));
+            for fi = 1:numel(dupfiles)
+                fprintf('    %s\n', dupfiles{fi});
+            end
+        end
+        error('Scan type "%s" matched more than one file for subject(s): %s. Tighten the pattern (see file list printed above).', scan_defs(k).label, strjoin(bad, ', '));
     end
 
     scan_defs(k).files    = files;
