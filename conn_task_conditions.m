@@ -9,10 +9,13 @@
 % scan_defs). Session 3 (rest_run1) is intentionally left with no
 % conditions defined — it's a resting scan with no task blocks.
 %
-% NOTE: 'rest' below is a CONDITION NAME — short fixation/rest blocks
-% embedded within each task run — not the same thing as the separate
-% resting-state session (rest_run1). Don't confuse the two in CONN's
-% condition list.
+% NOTE: 'taskrest' below is a CONDITION NAME — short fixation/rest
+% blocks embedded within each task run — deliberately NOT named 'rest',
+% because CONN automatically assigns an implicit whole-scan 'rest'
+% condition to any session (like rest_run1, session 3) that has no
+% explicit conditions defined. Naming this condition 'rest' too would
+% collide with that, pooling the short in-task fixation blocks together
+% with the entire independent resting-state scan under one label.
 %
 % Setup.isnew = 0 --> add to the existing project, don't create a new one.
 % Setup.done  = 1 --> actually run/finalize this Setup step (required
@@ -50,7 +53,7 @@ run1.joy.onsets        = [51.75, 159.0, 266.25, 326.75];
 run1.joy.durations     = [30.25, 30.25, 30.25, 30.25];
 run1.fear.onsets       = [82.0, 128.75, 205.75, 296.5];
 run1.fear.durations    = [30.25, 30.25, 30.25, 30.25];
-run1.rest.onsets       = [112.25, 189.25]; run1.rest.durations       = [16.5, 16.5];
+run1.taskrest.onsets   = [112.25, 189.25]; run1.taskrest.durations   = [16.5, 16.5];
 
 % RUN 2
 run2.shiver.onsets     = [0];              run2.shiver.durations     = [21.5];
@@ -59,16 +62,28 @@ run2.joy.durations     = [30.25, 30.25, 30.25, 30.25];
 run2.fear.onsets       = [51.75, 128.75, 249.75, 326.75];
 run2.fear.durations    = [30.25, 30.25, 30.25, 30.25];
 run2.neutral.onsets    = [189.25, 296.5];  run2.neutral.durations    = [30.25, 30.25];
-run2.rest.onsets       = [112.25, 280.0];  run2.rest.durations       = [16.5, 16.5];
+run2.taskrest.onsets   = [112.25, 280.0];  run2.taskrest.durations   = [16.5, 16.5];
 
 %% ---- Build conditions structure ----
 
-condnames = {'shiver','neutral','joy','fear','rest'};
+condnames = {'shiver','neutral','joy','fear','taskrest'};
 batch.Setup.conditions.names = condnames;
+
+% CONN expects one onsets/durations entry per session for every
+% condition/subject, even for sessions where the condition doesn't
+% apply — an empty array means "zero occurrences here", not "undefined".
+% Read the real session count from the project rather than hardcoding
+% it, so this still works if conn_setup.m's scan_defs ever changes.
+NSESSIONS = max(proj.CONN_x.Setup.nsessions);
 
 for nsub = 1:NSUBJECTS
     for ncond = 1:numel(condnames)
         cname = condnames{ncond};
+
+        for nses = 1:NSESSIONS
+            batch.Setup.conditions.onsets{ncond}{nsub}{nses}    = [];
+            batch.Setup.conditions.durations{ncond}{nsub}{nses} = [];
+        end
 
         % Session 1 = Run 1
         batch.Setup.conditions.onsets{ncond}{nsub}{1}    = run1.(cname).onsets;
