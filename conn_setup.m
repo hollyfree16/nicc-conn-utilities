@@ -1,9 +1,11 @@
 %% CONN Setup/Import Script — multi-session (task + rest), variable TR
 % -------------------------------------------------------------------
 % What this script does:
-%   1. Searches your BIDS dataset for each scan TYPE separately (e.g.
-%      task-emotion run-1, task-emotion run-2, rest run-1, rest run-2)
-%      using conn_dir (literal glob match).
+%   1. Enumerates subject folders under BIDS_ROOT matching SUBJECT_GLOB
+%      by resolving that wildcard ourselves via dir() (see note below),
+%      then searches within each subject's own literal folder for each
+%      scan TYPE separately (e.g. task-emotion run-1, task-emotion
+%      run-2, rest) using conn_dir (literal glob match).
 %   2. For each subject, assembles whichever sessions actually exist
 %      for them, in a fixed, documented order — subjects with fewer
 %      sessions (e.g. only 1 resting scan) are simply given a shorter
@@ -22,6 +24,20 @@
 % IMPORTANT: this script assumes every subject's functional .nii.gz
 % file has a matching .json sidecar in the same folder (standard BIDS).
 % If any are missing, set MANUAL_TR below to fall back on fixed values.
+%
+% NOTE ON conn_dir AND WILDCARDS: conn_dir only expands a wildcard in
+% the FINAL path component (the filename); it does NOT expand wildcards
+% in intermediate directory segments (e.g. 'sub-MGHL2*') — it returns
+% that segment back literally, unresolved, for every match. Passing a
+% pattern like fullfile(BIDS_ROOT,'sub-MGHL2*','ses-001','func','*bold.nii.gz')
+% directly to conn_dir therefore returns paths that still contain the
+% literal characters "sub-MGHL2*", which (a) breaks subject-ID parsing,
+% since every file appears to come from the same "subject", and (b) are
+% not valid filesystem paths, which would break the later file copy.
+% To avoid this, we resolve the subject-level wildcard ourselves first
+% with dir(), then call conn_dir separately per subject, scoped to that
+% subject's already-resolved (literal, non-wildcarded) folder — leaving
+% only the filename to be resolved by conn_dir, which it does correctly.
 % -------------------------------------------------------------------
 addpath('/autofs/space/nicc_003/users/holly/repo/spm12')
 addpath('/autofs/space/nicc_003/users/holly/repo/conn_25b')
@@ -41,78 +57,87 @@ USE_MANUAL_TR = false;
 %MANUAL_TR.task = 1.5;   % example only — used only if USE_MANUAL_TR = true
 %MANUAL_TR.rest = 2.0;   % example only — used only if USE_MANUAL_TR = true
 
-% ---- Define one glob pattern PER SCAN TYPE ----
+% ---- Wildcard used to enumerate subject folders directly under BIDS_ROOT ----
+SUBJECT_GLOB = 'sub-MGHL2*';
+
+% ---- Define one glob pattern PER SCAN TYPE, RELATIVE TO EACH SUBJECT'S FOLDER ----
 % Adjust these to your actual BIDS naming. Check one real filename
-% first, e.g. sub-MGHL201_ses-001_task-emotion_run-1_bold.nii.gz
+% first, e.g. sub-MGHL2p001_ses-001_task-emotion_run-01_bold.nii.gz
 % Order in this list = session order CONN will assign (see below).
+% Do not put subject-level wildcards here — see the NOTE ON conn_dir above.
 scan_defs = struct( ...
     'label',   {'task_emotion_run1', 'task_emotion_run2', 'rest_run1'}, ...
-    'pattern', { ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-emotion_run-01_bold.nii.gz'), ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-emotion_run-02_bold.nii.gz'), ...
-        fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'func', '*task-rest_bold.nii.gz') ...
+    'relpath', { ...
+        fullfile('ses-001', 'func', '*task-emotion_run-01_bold.nii.gz'), ...
+        fullfile('ses-001', 'func', '*task-emotion_run-02_bold.nii.gz'), ...
+        fullfile('ses-001', 'func', '*task-rest_bold.nii.gz') ...
     }, ...
     'type',    {'task','task','rest'} ...   % used only if USE_MANUAL_TR = true
     );
 
-% Structural file pattern — set to '' to skip structural import
-STRUCT_PATTERN = fullfile(BIDS_ROOT, 'sub-MGHL2*', 'ses-001', 'anat', '*ses-001_T1w.nii.gz');
+% Structural file pattern, relative to each subject's folder — set to '' to skip structural import
+STRUCT_RELPATH = fullfile('ses-001', 'anat', '*ses-001_T1w.nii.gz');
 
-%% ------------------- FIND FILES FOR EACH SCAN TYPE -------------------
+%% ------------------- ENUMERATE SUBJECT FOLDERS -------------------
+% Resolve the subject-level wildcard ourselves (dir() expands it
+% correctly), rather than handing it to conn_dir. See NOTE above.
+
+subj_listing = dir(fullfile(BIDS_ROOT, SUBJECT_GLOB));
+subj_listing = subj_listing([subj_listing.isdir]);
+subj_folder_names = {subj_listing.name};
+
+subj_tokens = regexp(subj_folder_names, 'sub-([A-Za-z0-9]+)', 'tokens', 'once');
+if any(cellfun(@isempty, subj_tokens))
+    error('Could not parse a subject ID from a matched folder name. Check SUBJECT_GLOB:\n  %s', fullfile(BIDS_ROOT, SUBJECT_GLOB));
+end
+all_subjects = cellfun(@(x) x{1}, subj_tokens, 'UniformOutput', false);
+[all_subjects, sort_idx] = sort(all_subjects);
+subj_folder_names = subj_folder_names(sort_idx);
+nsubjects = numel(all_subjects);
+
+fprintf('Found %d subject folder(s) matching "%s".\n', nsubjects, SUBJECT_GLOB);
+
+%% ------------------- FIND FILES FOR EACH SCAN TYPE, PER SUBJECT -------------------
+% conn_dir is now called once per subject per scan type, scoped to that
+% subject's already-resolved literal folder, so the only wildcard left
+% for it to expand is in the filename — which it does correctly.
 
 nscantypes = numel(scan_defs);
-all_subjects = {};
-
 for k = 1:nscantypes
-    files = cellstr(conn_dir(scan_defs(k).pattern));
-    files = files(~cellfun(@isempty, files));
-    tokens = regexp(files, 'sub-([A-Za-z0-9]+)', 'tokens', 'once');
-    if any(cellfun(@isempty, tokens))
-        error('Could not parse subject ID from a matched file for scan type "%s". Check pattern:\n  %s', scan_defs(k).label, scan_defs(k).pattern);
-    end
-    subj_ids = cellfun(@(x) x{1}, tokens, 'UniformOutput', false);
-
-    [u, ~, ic] = unique(subj_ids);
-    counts = accumarray(ic, 1);
-    if any(counts > 1)
-        bad = u(counts > 1);
-        fprintf('\nScan type "%s" matched more than one file for the following subject(s):\n', scan_defs(k).label);
-        for bi = 1:numel(bad)
-            fprintf('  %s:\n', bad{bi});
-            dupfiles = files(strcmp(subj_ids, bad{bi}));
-            for fi = 1:numel(dupfiles)
-                fprintf('    %s\n', dupfiles{fi});
-            end
-        end
-        error('Scan type "%s" matched more than one file for subject(s): %s. Tighten the pattern (see file list printed above).', scan_defs(k).label, strjoin(bad, ', '));
-    end
-
-    scan_defs(k).files    = files;
-    scan_defs(k).subj_ids = subj_ids;
-
-    fprintf('Scan type "%-18s": %d file(s) found\n', scan_defs(k).label, numel(files));
-    all_subjects = union(all_subjects, subj_ids);
+    scan_defs(k).files = cell(nsubjects, 1);   % scan_defs(k).files{nsub} = matched file, or '' if none
 end
 
-all_subjects = sort(all_subjects);
-nsubjects = numel(all_subjects);
-fprintf('\nTotal unique subjects across all scan types: %d\n', nsubjects);
+do_structural = ~isempty(STRUCT_RELPATH);
+struct_files = cell(nsubjects, 1);
 
-%% ------------------- FIND STRUCTURAL FILES (optional) -------------------
+for nsub = 1:nsubjects
+    subj_dir = fullfile(BIDS_ROOT, subj_folder_names{nsub});
 
-do_structural = ~isempty(STRUCT_PATTERN);
-if do_structural
-    struct_files = cellstr(conn_dir(STRUCT_PATTERN));
-    struct_files = struct_files(~cellfun(@isempty, struct_files));
-    struct_tokens = regexp(struct_files, 'sub-([A-Za-z0-9]+)', 'tokens', 'once');
-    struct_subj_ids = cellfun(@(x) x{1}, struct_tokens, 'UniformOutput', false);
-
-    [u, ~, ic] = unique(struct_subj_ids);
-    counts = accumarray(ic, 1);
-    if any(counts > 1)
-        bad = u(counts > 1);
-        error('STRUCT_PATTERN matched more than one file for subject(s): %s. Tighten the pattern.', strjoin(bad, ', '));
+    for k = 1:nscantypes
+        matches = cellstr(conn_dir(fullfile(subj_dir, scan_defs(k).relpath)));
+        matches = matches(~cellfun(@isempty, matches));
+        if numel(matches) > 1
+            fprintf('\nScan type "%s" matched more than one file for subject %s:\n', scan_defs(k).label, all_subjects{nsub});
+            fprintf('  %s\n', matches{:});
+            error('Scan type "%s" matched more than one file for subject %s. Tighten the pattern (see file list printed above).', scan_defs(k).label, all_subjects{nsub});
+        elseif ~isempty(matches)
+            scan_defs(k).files{nsub} = matches{1};
+        end
     end
+
+    if do_structural
+        smatches = cellstr(conn_dir(fullfile(subj_dir, STRUCT_RELPATH)));
+        smatches = smatches(~cellfun(@isempty, smatches));
+        if numel(smatches) > 1
+            error('STRUCT_RELPATH matched more than one file for subject %s:\n  %s', all_subjects{nsub}, strjoin(smatches, sprintf('\n  ')));
+        elseif ~isempty(smatches)
+            struct_files{nsub} = smatches{1};
+        end
+    end
+end
+
+for k = 1:nscantypes
+    fprintf('Scan type "%-18s": %d file(s) found\n', scan_defs(k).label, sum(~cellfun(@isempty, scan_defs(k).files)));
 end
 
 %% ------------------- BUILD PER-SUBJECT SESSION LISTS -------------------
@@ -122,18 +147,16 @@ end
 
 session_map = cell(nsubjects, 1);   % session_map{nsub} = cell array of scan_defs labels, in session order
 for nsub = 1:nsubjects
-    subj = all_subjects{nsub};
     labels_here = {};
     files_here  = {};
     for k = 1:nscantypes
-        idx = find(strcmp(scan_defs(k).subj_ids, subj), 1);
-        if ~isempty(idx)
+        if ~isempty(scan_defs(k).files{nsub})
             labels_here{end+1} = scan_defs(k).label;          %#ok<AGROW>
-            files_here{end+1}  = scan_defs(k).files{idx};      %#ok<AGROW>
+            files_here{end+1}  = scan_defs(k).files{nsub};     %#ok<AGROW>
         end
     end
     if isempty(files_here)
-        warning('Subject %s matched no scan types — skipping.', subj);
+        warning('Subject %s matched no scan types — skipping.', all_subjects{nsub});
     end
     session_map{nsub} = labels_here;
     batch.Setup.functionals{nsub} = files_here;  % Setup.functionals{nsub}{nses}
@@ -150,12 +173,10 @@ end
 
 if do_structural
     for nsub = 1:nsubjects
-        subj = all_subjects{nsub};
-        sidx = find(strcmp(struct_subj_ids, subj), 1);
-        if ~isempty(sidx)
-            batch.Setup.structurals{nsub} = struct_files{sidx};
+        if ~isempty(struct_files{nsub})
+            batch.Setup.structurals{nsub} = struct_files{nsub};
         else
-            warning('No structural file found for subject %s — leaving structural unset.', subj);
+            warning('No structural file found for subject %s — leaving structural unset.', all_subjects{nsub});
         end
     end
 end
