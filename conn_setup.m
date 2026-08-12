@@ -6,10 +6,12 @@
 %      then searches within each subject's own literal folder for each
 %      scan TYPE separately (e.g. task-emotion run-1, task-emotion
 %      run-2, rest) using conn_dir (literal glob match).
-%   2. For each subject, assembles whichever sessions actually exist
-%      for them, in a fixed, documented order — subjects with fewer
-%      sessions (e.g. only 1 resting scan) are simply given a shorter
-%      list; CONN infers nsessions per-subject from that list length.
+%   2. Keeps ONLY subjects who have EVERY scan type defined in scan_defs
+%      AND a structural scan — anyone missing any of these is excluded
+%      entirely (printed, with what they're missing) rather than given
+%      a shorter session list. Prints a final manifest (subject ID +
+%      matched file per scan type + structural) for the subjects that
+%      remain, before anything is copied.
 %   3. Sets Setup.RT = NaN, so CONN reads the TR for EACH SESSION from
 %      that file's BIDS sidecar .json (RepetitionTime field) instead of
 %      assuming one fixed TR for everyone. This is what lets task and
@@ -140,44 +142,131 @@ for k = 1:nscantypes
     fprintf('Scan type "%-18s": %d file(s) found\n', scan_defs(k).label, sum(~cellfun(@isempty, scan_defs(k).files)));
 end
 
+%% ------------------- FILTER TO COMPLETE SUBJECTS ONLY -------------------
+% Only subjects with EVERY scan type in scan_defs AND a structural scan
+% (when STRUCT_RELPATH is set) are kept. Anyone missing any of these is
+% excluded entirely — no partial-session subjects are carried forward.
+
+is_complete = true(nsubjects, 1);
+for nsub = 1:nsubjects
+    for k = 1:nscantypes
+        if isempty(scan_defs(k).files{nsub})
+            is_complete(nsub) = false;
+        end
+    end
+    if do_structural && isempty(struct_files{nsub})
+        is_complete(nsub) = false;
+    end
+end
+
+if any(~is_complete)
+    fprintf('\nExcluding %d subject(s) missing one or more required scans:\n', sum(~is_complete));
+    excl_idx = find(~is_complete)';
+    for nsub = excl_idx
+        missing = {};
+        for k = 1:nscantypes
+            if isempty(scan_defs(k).files{nsub})
+                missing{end+1} = scan_defs(k).label; %#ok<AGROW>
+            end
+        end
+        if do_structural && isempty(struct_files{nsub})
+            missing{end+1} = 'structural'; %#ok<AGROW>
+        end
+        fprintf('  %-12s : missing %s\n', all_subjects{nsub}, strjoin(missing, ', '));
+    end
+end
+
+all_subjects = all_subjects(is_complete);
+for k = 1:nscantypes
+    scan_defs(k).files = scan_defs(k).files(is_complete);
+end
+struct_files = struct_files(is_complete);
+nsubjects    = numel(all_subjects);
+
+% Final clean manifest — subject ID plus the exact file matched for each
+% required scan type and structural. This is the list actually used to
+% build the CONN project; verify it before anything gets copied.
+fprintf('\n%d subject(s) have complete data and will be included:\n', nsubjects);
+for nsub = 1:nsubjects
+    fprintf('\n  %s\n', all_subjects{nsub});
+    for k = 1:nscantypes
+        fprintf('    %-18s : %s\n', scan_defs(k).label, scan_defs(k).files{nsub});
+    end
+    if do_structural
+        fprintf('    %-18s : %s\n', 'structural', struct_files{nsub});
+    end
+end
+
+%% ------------------- WRITE CONN SUBJECT-ID <-> REAL SUBJECT-ID MAP -------------------
+% CONN refers to subjects internally as sub-0001, sub-0002, ... in batch
+% order (the order of all_subjects here) — that's what shows up in the
+% copied data folder structure and in CONN's own error messages (e.g.
+% "sub-0008"). This file lets you look up which real subject a given
+% internal ID corresponds to.
+
+if ~exist(PROJECT_DIR, 'dir'); mkdir(PROJECT_DIR); end
+subject_map_file = fullfile(PROJECT_DIR, [PROJECT_NAME '_subject_id_map.csv']);
+fid = fopen(subject_map_file, 'w');
+if fid == -1
+    error('Could not open subject ID map file for writing:\n  %s', subject_map_file);
+end
+fprintf(fid, 'conn_subject_id,real_subject_id\n');
+for nsub = 1:nsubjects
+    fprintf(fid, 'sub-%04d,%s\n', nsub, all_subjects{nsub});
+end
+fclose(fid);
+fprintf('\nWrote CONN subject-ID map to:\n  %s\n', subject_map_file);
+
+%% ------------------- PRE-FLIGHT: VERIFY GZIP INTEGRITY -------------------
+% Catches corrupt/mislabeled .nii.gz files (wrong magic bytes) BEFORE
+% conn_batch starts copying, so a bad file surfaces with its real BIDS
+% path instead of a cryptic error deep inside CONN's copy step after
+% other subjects have already been (wastefully) copied.
+
+bad_files = {};
+for k = 1:nscantypes
+    for nsub = 1:nsubjects
+        f = scan_defs(k).files{nsub};
+        if endsWith(f, '.gz') && ~is_valid_gzip(f)
+            bad_files{end+1} = f; %#ok<AGROW>
+        end
+    end
+end
+if do_structural
+    for nsub = 1:nsubjects
+        f = struct_files{nsub};
+        if endsWith(f, '.gz') && ~is_valid_gzip(f)
+            bad_files{end+1} = f; %#ok<AGROW>
+        end
+    end
+end
+if ~isempty(bad_files)
+    fprintf('\nThe following file(s) are named .gz but are not valid GZIP data:\n');
+    fprintf('  %s\n', bad_files{:});
+    error('%d file(s) failed GZIP validation (see list above). Fix or exclude these before continuing.', numel(bad_files));
+end
+fprintf('All matched .gz files passed GZIP integrity check.\n');
+
 %% ------------------- BUILD PER-SUBJECT SESSION LISTS -------------------
-% For each subject, include whichever scan types they actually have,
-% IN THE ORDER DEFINED IN scan_defs (so session order is consistent
-% and documented across subjects, even when some sessions are missing).
+% All remaining subjects have every scan type in scan_defs, in the fixed
+% order defined there, so every subject gets the same session count.
 
 session_map = cell(nsubjects, 1);   % session_map{nsub} = cell array of scan_defs labels, in session order
 for nsub = 1:nsubjects
-    labels_here = {};
-    files_here  = {};
+    labels_here = {scan_defs.label};
+    files_here  = cell(1, nscantypes);
     for k = 1:nscantypes
-        if ~isempty(scan_defs(k).files{nsub})
-            labels_here{end+1} = scan_defs(k).label;          %#ok<AGROW>
-            files_here{end+1}  = scan_defs(k).files{nsub};     %#ok<AGROW>
-        end
-    end
-    if isempty(files_here)
-        warning('Subject %s matched no scan types — skipping.', all_subjects{nsub});
+        files_here{k} = scan_defs(k).files{nsub};
     end
     session_map{nsub} = labels_here;
     batch.Setup.functionals{nsub} = files_here;  % Setup.functionals{nsub}{nses}
-end
-
-% Print a per-subject summary so you can verify session assignment
-% before anything gets copied.
-fprintf('\nPer-subject session assignment:\n');
-for nsub = 1:nsubjects
-    fprintf('  %-12s : %s\n', all_subjects{nsub}, strjoin(session_map{nsub}, ', '));
 end
 
 %% ------------------- STRUCTURAL PER SUBJECT -------------------
 
 if do_structural
     for nsub = 1:nsubjects
-        if ~isempty(struct_files{nsub})
-            batch.Setup.structurals{nsub} = struct_files{nsub};
-        else
-            warning('No structural file found for subject %s — leaving structural unset.', all_subjects{nsub});
-        end
+        batch.Setup.structurals{nsub} = struct_files{nsub};
     end
 end
 
@@ -203,7 +292,6 @@ end
 
 %% ------------------- BUILD REMAINING CONN BATCH FIELDS -------------------
 
-if ~exist(PROJECT_DIR, 'dir'); mkdir(PROJECT_DIR); end
 batch.filename = fullfile(PROJECT_DIR, [PROJECT_NAME '.mat']);
 
 batch.Setup.isnew     = 1;
@@ -230,3 +318,19 @@ if ~USE_MANUAL_TR
     fprintf('TR will be read automatically per-session from BIDS .json sidecars.\n');
 end
 fprintf('No preprocessing, denoising, or analysis was run — open the project in the CONN GUI to continue.\n');
+
+%% ------------------- LOCAL FUNCTIONS -------------------
+
+function tf = is_valid_gzip(filename)
+% Checks the first 2 bytes for the GZIP magic number (0x1f 0x8b) rather
+% than trusting the .gz extension, so a mislabeled/corrupt file is
+% caught here instead of failing deep inside conn_batch's unzip step.
+fid = fopen(filename, 'r');
+if fid == -1
+    tf = false;
+    return;
+end
+magic = fread(fid, 2, 'uint8=>uint8');
+fclose(fid);
+tf = numel(magic) == 2 && magic(1) == 31 && magic(2) == 139;
+end
