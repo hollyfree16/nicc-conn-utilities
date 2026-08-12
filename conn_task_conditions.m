@@ -4,18 +4,16 @@
 % project — run this AFTER conn_setup.m has finished and you've
 % confirmed the resulting .mat looks right.
 %
-% Conditions are only defined for sessions 1 and 2 (task_emotion_run1,
-% task_emotion_run2, per the session order conn_setup.m assigns via
-% scan_defs). Session 3 (rest_run1) is intentionally left with no
-% conditions defined — it's a resting scan with no task blocks.
-%
-% NOTE: 'taskrest' below is a CONDITION NAME — short fixation/rest
-% blocks embedded within each task run — deliberately NOT named 'rest',
-% because CONN automatically assigns an implicit whole-scan 'rest'
-% condition to any session (like rest_run1, session 3) that has no
-% explicit conditions defined. Naming this condition 'rest' too would
-% collide with that, pooling the short in-task fixation blocks together
-% with the entire independent resting-state scan under one label.
+% Two DIFFERENT things are both called "rest" in this paradigm, and this
+% script deliberately gives them different condition names:
+%   - 'taskrest': the brief fixation/rest blocks embedded WITHIN each
+%     task-emotion run (sessions 1 & 2, per run1/run2 tables below).
+%   - 'rest': the separate, PURE resting-state scan (session 3,
+%     rest_run1) — defined explicitly here as one block spanning the
+%     entire session, rather than relying on CONN's implicit "whole
+%     session is rest if no conditions are defined" behavior.
+% 'taskrest' only applies to sessions 1 & 2; 'rest' only applies to
+% session 3 — each is left undefined (empty) everywhere else.
 %
 % Setup.isnew = 0 --> add to the existing project, don't create a new one.
 % Setup.done  = 0 --> ONLY store these condition definitions in the
@@ -68,7 +66,13 @@ run2.taskrest.onsets   = [112.25, 280.0];  run2.taskrest.durations   = [16.5, 16
 
 %% ---- Build conditions structure ----
 
-condnames = {'shiver','neutral','joy','fear','taskrest'};
+% Session indices, matching the order conn_setup.m assigns via scan_defs.
+RUN1_SESSION = 1;   % task_emotion_run1
+RUN2_SESSION = 2;   % task_emotion_run2
+REST_SESSION = 3;   % rest_run1 — the pure resting-state scan
+
+task_condnames = {'shiver','neutral','joy','fear','taskrest'};
+condnames = [task_condnames, {'rest'}];
 batch.Setup.conditions.names = condnames;
 
 % CONN expects one onsets/durations entry per session for every
@@ -79,22 +83,30 @@ batch.Setup.conditions.names = condnames;
 NSESSIONS = max(proj.CONN_x.Setup.nsessions);
 
 for nsub = 1:NSUBJECTS
+    % Default every condition to "not present" in every session, then
+    % fill in only where each condition actually applies.
     for ncond = 1:numel(condnames)
-        cname = condnames{ncond};
-
         for nses = 1:NSESSIONS
             batch.Setup.conditions.onsets{ncond}{nsub}{nses}    = [];
             batch.Setup.conditions.durations{ncond}{nsub}{nses} = [];
         end
-
-        % Session 1 = Run 1
-        batch.Setup.conditions.onsets{ncond}{nsub}{1}    = run1.(cname).onsets;
-        batch.Setup.conditions.durations{ncond}{nsub}{1} = run1.(cname).durations;
-
-        % Session 2 = Run 2
-        batch.Setup.conditions.onsets{ncond}{nsub}{2}    = run2.(cname).onsets;
-        batch.Setup.conditions.durations{ncond}{nsub}{2} = run2.(cname).durations;
     end
+
+    % Task conditions (including 'taskrest') apply only within the
+    % task-emotion runs, sessions 1 & 2.
+    for ncond = 1:numel(task_condnames)
+        cname = task_condnames{ncond};
+        batch.Setup.conditions.onsets{ncond}{nsub}{RUN1_SESSION}    = run1.(cname).onsets;
+        batch.Setup.conditions.durations{ncond}{nsub}{RUN1_SESSION} = run1.(cname).durations;
+        batch.Setup.conditions.onsets{ncond}{nsub}{RUN2_SESSION}    = run2.(cname).onsets;
+        batch.Setup.conditions.durations{ncond}{nsub}{RUN2_SESSION} = run2.(cname).durations;
+    end
+
+    % 'rest' applies only to session 3 — one block spanning the entire
+    % resting-state scan (duration=inf means "to the end of the session").
+    rest_idx = numel(condnames);
+    batch.Setup.conditions.onsets{rest_idx}{nsub}{REST_SESSION}    = [0];
+    batch.Setup.conditions.durations{rest_idx}{nsub}{REST_SESSION} = [inf];
 end
 
 batch.Setup.done      = 0;
