@@ -18,9 +18,11 @@
 % with the entire independent resting-state scan under one label.
 %
 % Setup.isnew = 0 --> add to the existing project, don't create a new one.
-% Setup.done  = 1 --> actually run/finalize this Setup step (required
-%                     for CONN to validate and register the new
-%                     conditions against the existing data).
+% Setup.done  = 0 --> ONLY store these condition definitions in the
+%                     project; do NOT execute/finalize the Setup stage.
+%                     Matches conn_setup.m's approach — Setup stays
+%                     unfinalized so you can still add ROIs, covariates,
+%                     etc. yourself before running Setup for real.
 % -------------------------------------------------------------------
 addpath('/autofs/space/nicc_003/users/holly/repo/spm12')
 addpath('/autofs/space/nicc_003/users/holly/repo/conn_25b')
@@ -95,11 +97,12 @@ for nsub = 1:NSUBJECTS
     end
 end
 
-batch.Setup.done      = 1;
+batch.Setup.done      = 0;
 batch.Setup.overwrite = 1;
 
 %% ------------------- RUN -------------------
 
 conn_batch(batch);
 
-fprintf('\nDone. Task conditions (%s) added for %d subject(s) in:\n  %s\n', strjoin(condnames, ', '), NSUBJECTS, batch.filename);
+fprintf('\nDone. Task conditions (%s) stored for %d subject(s) in:\n  %s\n', strjoin(condnames, ', '), NSUBJECTS, batch.filename);
+fprintf('Setup was NOT finalized (done=0) — continue setting up the project (ROIs, etc.) before running Setup for real.\n');
