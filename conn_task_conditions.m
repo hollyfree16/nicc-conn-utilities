@@ -36,10 +36,12 @@ batch.Setup.isnew = 0;
 
 proj = load(batch.filename, 'CONN_x');
 NSUBJECTS = proj.CONN_x.Setup.nsubjects;
-TR        = proj.CONN_x.Setup.RT;
-if numel(TR) > 1, TR = TR(1); end   % CONN_x.Setup.RT may be scalar or per-session; assumes constant TR here — verify if not
+% TR is read per-subject/per-session directly from each functional file's
+% own header below (see get_nvols_and_TR) rather than from CONN_x.Setup.RT:
+% conn_setup.m sets Setup.RT = NaN so CONN pulls TR per-session from each
+% file's BIDS sidecar, so a single scalar off Setup.RT isn't trustworthy here.
 
-fprintf('Checking actual scan durations for %d subject(s), TR=%.3fs\n', NSUBJECTS, TR);
+fprintf('Checking actual scan durations for %d subject(s)\n', NSUBJECTS);
 
 %% ------------------- Session indices -------------------
 
@@ -80,6 +82,19 @@ function [ons_out, dur_out, ndropped] = truncate_condition(ons_in, dur_in, actua
     ndropped = sum(~keep);
 end
 
+%% ------------------- Helper: read actual nvols + TR from the image itself -------------------
+% CONN_x.Setup.functional{nsub}{nses} stores one entry PER FRAME (SPM-style
+% 'file.nii,N'), so {1} alone is just frame 1. Strip the frame-index suffix
+% to get the base 4D file, then let spm_vol return headers for every volume
+% and read TR straight from that file's own header — no dependence on
+% CONN_x.Setup.RT, which conn_setup.m intentionally leaves as NaN.
+function [nvols, TR] = get_nvols_and_TR(func_spec)
+    base_path = regexprep(func_spec, ',\d+$', '');
+    V = spm_vol(base_path);
+    nvols = numel(V);
+    TR = V(1).private.timing.tspace;
+end
+
 %% ------------------- Main loop -------------------
 
 for nsub = 1:NSUBJECTS
@@ -92,13 +107,14 @@ for nsub = 1:NSUBJECTS
         end
     end
 
-    % --- Get actual volume counts for run-01 and run-02 from the project's
-    % --- already-registered functional files
+    % --- Get actual volume counts + TR for run-01 and run-02 directly from
+    % --- each subject's own functional file header (per-session, since TR
+    % --- can differ across sessions/scan types)
     func1 = proj.CONN_x.Setup.functional{nsub}{RUN1_SESSION}{1};
     func2 = proj.CONN_x.Setup.functional{nsub}{RUN2_SESSION}{1};
 
-    V1 = spm_vol(func1); nvols1 = numel(V1); actual_dur1 = nvols1 * TR;
-    V2 = spm_vol(func2); nvols2 = numel(V2); actual_dur2 = nvols2 * TR;
+    [nvols1, TR1] = get_nvols_and_TR(func1); actual_dur1 = nvols1 * TR1;
+    [nvols2, TR2] = get_nvols_and_TR(func2); actual_dur2 = nvols2 * TR2;
 
     flagged1 = actual_dur1 < 357;   % theoretical full duration
     flagged2 = actual_dur2 < 357;
