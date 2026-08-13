@@ -94,8 +94,8 @@ for nsub = 1:NSUBJECTS
 
     % --- Get actual volume counts for run-01 and run-02 from the project's
     % --- already-registered functional files
-    func1 = proj.CONN_x.Setup.functionals{nsub}{RUN1_SESSION}{1};
-    func2 = proj.CONN_x.Setup.functionals{nsub}{RUN2_SESSION}{1};
+    func1 = proj.CONN_x.Setup.functional{nsub}{RUN1_SESSION}{1};
+    func2 = proj.CONN_x.Setup.functional{nsub}{RUN2_SESSION}{1};
 
     V1 = spm_vol(func1); nvols1 = numel(V1); actual_dur1 = nvols1 * TR;
     V2 = spm_vol(func2); nvols2 = numel(V2); actual_dur2 = nvols2 * TR;
